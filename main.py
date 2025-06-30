@@ -15,11 +15,13 @@ print("Script started")  # Отладочный print
 
 # Настройки биржи (Binance Testnet)
 exchange = ccxt.binance({
-    'apiKey': '4c70a16f2765599439f6af8bd3d683dfbf8153019c51ed33420ad70347bf478e',  # Замените на ваш API-ключ Binance Testnet
-    'secret': '1802f3d3c1fd2615c27707ee1732d17d53c4f42f269e063a364accff8d2e954c',  # Замените на ваш секретный ключ Binance Testnet
+    'apiKey': os.getenv('BINANCE_API_KEY', '4c70a16f2765599439f6af8bd3d683dfbf8153019c51ed33420ad70347bf478e'),
+    'secret': os.getenv('BINANCE_SECRET_KEY', '1802f3d3c1fd2615c27707ee1732d17d53c4f42f269e063a364accff8d2e954c'),
     'enableRateLimit': True,
     'urls': {
         'api': {
+            'public': 'https://testnet.binancefuture.com/fapi/v1',
+            'private': 'https://testnet.binancefuture.com/fapi/v1',
             'fapi': 'https://testnet.binancefuture.com/fapi',
         }
     },
