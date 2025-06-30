@@ -15,13 +15,11 @@ print("Script started")  # Отладочный print
 
 # Настройки биржи (Binance Testnet)
 exchange = ccxt.binance({
-    'apiKey': os.getenv('BINANCE_API_KEY', '4c70a16f2765599439f6af8bd3d683dfbf8153019c51ed33420ad70347bf478e'),
-    'secret': os.getenv('BINANCE_SECRET_KEY', '1802f3d3c1fd2615c27707ee1732d17d53c4f42f269e063a364accff8d2e954c'),
+    'apiKey': '4c70a16f2765599439f6af8bd3d683dfbf8153019c51ed33420ad70347bf478e',  # Замените на ваш API-ключ Binance Testnet
+    'secret': '1802f3d3c1fd2615c27707ee1732d17d53c4f42f269e063a364accff8d2e954c',  # Замените на ваш секретный ключ Binance Testnet
     'enableRateLimit': True,
     'urls': {
         'api': {
-            'public': 'https://testnet.binancefuture.com/fapi/v1',
-            'private': 'https://testnet.binancefuture.com/fapi/v1',
             'fapi': 'https://testnet.binancefuture.com/fapi',
         }
     },
@@ -197,173 +195,133 @@ def close_position(symbol, side, position_size, entry_price, reason):
         )
         pnl = calculate_pnl(side, entry_price, exit_price, position_size)
         logger.info(f"Позиция {side} закрыта ({reason})\nЦена выхода: {exit_price}\nPNL: {pnl} USDT", extra={'symbol': symbol})
-        send_telegram_message(f"[{symbol}] Позиция {side} закрыта ({reason})\nЦена входа: {entry_price}\nЦена выхода: {exit_price}\nPNL: {pnl} USDT")
-        return exit_price, pnl
+        send_telegram_message(f"[{symbol}] Позиция {side} закрыта ({reason})\nЦена выхода: {exit_price}\nPNL: {pnl} USDT")
     except Exception as e:
-        logger.error(f"Ошибка при закрытии позиции ({reason}): {e}", extra={'symbol': symbol})
-        send_telegram_message(f"[{symbol}] Ошибка при закрытии позиции ({reason}): {e}")
-        return None, 0
+        logger.error(f"Ошибка при закрытии позиции: {e}", extra={'symbol': symbol})
+        send_telegram_message(f"[{symbol}] Ошибка при закрытии позиции: {e}")
 
-# Управление позицией
-def manage_position(symbol, side, entry_price, position_size, atr):
+# Открытие позиции с выставлением TP и SL
+def open_position(symbol, side, balance, entry_price):
     try:
-        tp_price = entry_price * (1 + tp_percent) if side == 'LONG' else entry_price * (1 - tp_percent)
-        sl_price = entry_price * (1 - atr * 1.5 / entry_price) if side == 'LONG' else entry_price * (1 + atr * 1.5 / entry_price)
-        
-        # Отправка ордеров TP/SL
-        exchange.create_order(
-            symbol=symbol,
-            type='LIMIT',
-            side='sell' if side == 'LONG' else 'buy',
-            amount=position_size,
-            price=tp_price,
-            params={'reduceOnly': True, 'positionSide': side}
-        )
-        exchange.create_order(
-            symbol=symbol,
-            type='STOP_MARKET',
-            side='sell' if side == 'LONG' else 'buy',
-            amount=position_size,
-            params={'stopPrice': sl_price, 'reduceOnly': True, 'positionSide': side}
-        )
-        logger.info(f"Открыта позиция {side} по цене {entry_price}, Размер: {position_size:.6f}, TP: {tp_price}, SL: {sl_price}", extra={'symbol': symbol})
-        send_telegram_message(f"[{symbol}] Открыта позиция {side}\nЦена: {entry_price}\nРазмер: {position_size:.6f}\nTP: {tp_price}\nSL: {sl_price}")
-        return tp_price, sl_price
+        # Рассчитаем позиционный размер (усреднённо, 2.5% от баланса)
+        position_size = round((balance * 0.025) / entry_price, 5)
+        if position_size <= 0:
+            logger.warning("Размер позиции равен 0, позиция не открыта", extra={'symbol': symbol})
+            return None, None
+
+        params = {'positionSide': side}
+        order_side = 'buy' if side == 'LONG' else 'sell'
+
+        order = exchange.create_market_order(symbol, order_side, position_size, params=params)
+        logger.info(f"Позиция {side} открыта по цене {entry_price}, размер {position_size}", extra={'symbol': symbol})
+
+        # Установка TP и SL
+        if side == 'LONG':
+            tp_price = entry_price * (1 + tp_percent)
+            sl_price = entry_price * (1 - tp_percent)
+        else:
+            tp_price = entry_price * (1 - tp_percent)
+            sl_price = entry_price * (1 + tp_percent)
+
+        # Параметры для TP и SL ордеров (Binance Futures)
+        # Здесь можно использовать условные ордера (STOP_MARKET и TAKE_PROFIT_MARKET)
+        # Но для упрощения можно делать контроль вручную в основном цикле
+
+        send_telegram_message(f"[{symbol}] Открыта позиция {side}\nЦена: {entry_price}\nTP: {tp_price}\nSL: {sl_price}")
+
+        return position_size, (tp_price, sl_price)
     except Exception as e:
-        logger.error(f"Ошибка при установке TP/SL: {e}", extra={'symbol': symbol})
-        send_telegram_message(f"[{symbol}] Ошибка при установке TP/SL: {e}")
+        logger.error(f"Ошибка при открытии позиции: {e}", extra={'symbol': symbol})
+        send_telegram_message(f"[{symbol}] Ошибка при открытии позиции: {e}")
         return None, None
 
-# Проверка тайм-аута
-def check_timeout(symbol, entry_time, position_size, side, entry_price):
-    if time.time() - entry_time > timeout_seconds:
-        exit_price, pnl = close_position(symbol, side, position_size, entry_price, "тайм-аут")
-        return True, exit_price, pnl
-    return False, None, 0
-
-# Проверка статуса позиции
-def check_position_status(symbol, side, position_size, entry_price, tp_price, sl_price):
-    try:
-        positions = exchange.fapiPrivateV2_get_positionrisk({'symbol': symbol.replace('/', '')})
-        for pos in positions:
-            if float(pos['positionAmt']) != 0 and pos['positionSide'] == side:
-                current_price = float(pos['markPrice'])
-                if (side == 'LONG' and (current_price >= tp_price or current_price <= sl_price)) or \
-                   (side == 'SHORT' and (current_price <= tp_price or current_price >= sl_price)):
-                    reason = "TP" if (side == 'LONG' and current_price >= tp_price) or (side == 'SHORT' and current_price <= tp_price) else "SL"
-                    exit_price, pnl = close_position(symbol, side, position_size, entry_price, reason)
-                    return True, exit_price, pnl
-        return False, None, 0
-    except Exception as e:
-        logger.error(f"Ошибка при проверке статуса позиции: {e}", extra={'symbol': symbol})
-        send_telegram_message(f"[{symbol}] Ошибка при проверке статуса позиции: {e}")
-        return False, None, 0
-
-# Основной цикл
+# Основной цикл торговли
 def main():
-    # Сообщение о запуске бота
-    start_time = datetime.datetime.now(timezone('Europe/Kiev')).strftime('%Y-%m-%d %H:%M:%S %Z')
-    logger.info(f"Бот запущен в {start_time}", extra={'symbol': symbol})
-    send_telegram_message(f"[{symbol}] Бот запущен в {start_time}")
-    
-    # Проверка подключения к Binance Testnet
     if not check_exchange_connection():
-        logger.error("Прекращение работы из-за ошибки подключения", extra={'symbol': symbol})
+        logger.error("Не удалось подключиться к бирже, выход", extra={'symbol': symbol})
         return
-    
+
     set_leverage_and_margin_mode(symbol)
-    position_active = False
-    entry_time = 0
-    position_side = None
+
+    current_position = None
     position_size = 0
-    entry_price = 0
     tp_price = None
     sl_price = None
+    entry_price = 0
+    position_side = None
+    last_entry_time = None
 
     while True:
         try:
-            logger.info("Начало нового торгового цикла", extra={'symbol': symbol})
-            # Проверка баланса
-            balance = exchange.fetch_balance()['USDT']['free']
-            if balance < min_balance:
-                logger.error(f"Недостаточно средств: {balance} USDT", extra={'symbol': symbol})
-                send_telegram_message(f"[{symbol}] Недостаточно средств: {balance} USDT")
+            # Получаем баланс USDT
+            balance_info = exchange.fetch_balance()
+            usdt_balance = balance_info['total'].get('USDT', 0)
+            logger.info(f"Баланс USDT: {usdt_balance}", extra={'symbol': symbol})
+
+            if usdt_balance < min_balance:
+                logger.warning("Баланс ниже минимального порога, торговля приостановлена", extra={'symbol': symbol})
+                send_telegram_message(f"[{symbol}] Баланс ниже минимального порога ({min_balance} USDT). Торговля приостановлена.")
                 time.sleep(60)
                 continue
-            
-            # Получение данных
+
+            # Получаем данные для 1m и 5m
             df_1m = fetch_ohlcv(symbol, timeframe_1m)
             df_5m = fetch_ohlcv(symbol, timeframe_5m)
+
             if df_1m is None or df_5m is None:
-                time.sleep(60)
+                time.sleep(30)
                 continue
+
             df_1m = calculate_indicators(df_1m)
             df_5m = calculate_indicators(df_5m)
-            if df_1m is None or df_5m is None:
-                time.sleep(60)
-                continue
-            
-            # Проверка активной позиции
-            if position_active:
-                # Проверка TP/SL
-                closed, exit_price, pnl = check_position_status(symbol, position_side, position_size, entry_price, tp_price, sl_price)
-                if closed:
-                    position_active = False
-                    position_side = None
-                    position_size = 0
-                    entry_price = 0
-                    tp_price = None
-                    sl_price = None
-                    time.sleep(10)
-                    continue
-                
-                # Проверка тайм-аута
-                timed_out, exit_price, pnl = check_timeout(symbol, entry_time, position_size, position_side, entry_price)
-                if timed_out:
-                    position_active = False
-                    position_side = None
-                    position_size = 0
-                    entry_price = 0
-                    tp_price = None
-                    sl_price = None
-                    time.sleep(10)
-                    continue
-                
-                time.sleep(10)
-                continue
-            
-            # Проверка условий входа
-            signal = check_entry_conditions(df_1m, df_5m, symbol)
-            if signal:
-                price = df_1m['close'].iloc[-1]
-                atr = df_1m['atr'].iloc[-1]
-                position_size = (balance * risk_per_trade) / (atr * 1.5 / price) * leverage
-                
-                # Открытие позиции
-                if signal == 'LONG':
-                    exchange.create_market_buy_order(symbol, position_size, params={'positionSide': 'LONG'})
-                    tp_price, sl_price = manage_position(symbol, 'LONG', price, position_size, atr)
-                    if tp_price is None or sl_price is None:
-                        continue
-                    position_active = True
-                    position_side = 'LONG'
-                    entry_time = time.time()
-                    entry_price = price
-                elif signal == 'SHORT':
-                    exchange.create_market_sell_order(symbol, position_size, params={'positionSide': 'SHORT'})
-                    tp_price, sl_price = manage_position(symbol, 'SHORT', price, position_size, atr)
-                    if tp_price is None or sl_price is None:
-                        continue
-                    position_active = True
-                    position_side = 'SHORT'
-                    entry_time = time.time()
-                    entry_price = price
-            
-            time.sleep(60)
-        except Exception as e:
-            logger.error(f"Ошибка в цикле: {e}", extra={'symbol': symbol})
-            send_telegram_message(f"[{symbol}] Ошибка в цикле: {e}")
-            time.sleep(60)
 
-if __name__ == "__main__":
+            if df_1m is None or df_5m is None:
+                time.sleep(30)
+                continue
+
+            signal = check_entry_conditions(df_1m, df_5m, symbol)
+            last_price = df_1m.iloc[-1]['close']
+
+            if current_position is None and signal is not None:
+                # Открываем позицию
+                position_size, (tp_price, sl_price) = open_position(symbol, signal, usdt_balance, last_price)
+                if position_size:
+                    current_position = signal
+                    entry_price = last_price
+                    position_side = signal
+                    last_entry_time = time.time()
+            elif current_position is not None:
+                # Следим за тейк профитом и стоп лоссом
+                now_price = last_price
+                elapsed = time.time() - last_entry_time
+
+                if (current_position == 'LONG' and (now_price >= tp_price or now_price <= sl_price)) or \
+                   (current_position == 'SHORT' and (now_price <= tp_price or now_price >= sl_price)):
+                    close_position(symbol, current_position, position_size, entry_price, reason='TP/SL reached')
+                    current_position = None
+                    position_size = 0
+                    tp_price = None
+                    sl_price = None
+                    entry_price = 0
+                    position_side = None
+                    last_entry_time = None
+
+                # Тайм-аут выхода из позиции
+                elif elapsed > timeout_seconds:
+                    close_position(symbol, current_position, position_size, entry_price, reason='Timeout')
+                    current_position = None
+                    position_size = 0
+                    tp_price = None
+                    sl_price = None
+                    entry_price = 0
+                    position_side = None
+                    last_entry_time = None
+
+            time.sleep(10)
+        except Exception as e:
+            logger.error(f"Ошибка в основном цикле: {e}", extra={'symbol': symbol})
+            send_telegram_message(f"[{symbol}] Ошибка в основном цикле: {e}")
+            time.sleep(30)
+
+if __name__ == '__main__':
     main()
