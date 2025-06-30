@@ -11,6 +11,8 @@ from pytz import timezone
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - [%(symbol)s] - %(message)s')
 logger = logging.getLogger(__name__)
 
+print("Script started")  # Отладочный print
+
 # Настройки биржи (Binance Testnet)
 exchange = ccxt.binance({
     'apiKey': '4c70a16f2765599439f6af8bd3d683dfbf8153019c51ed33420ad70347bf478e',  # Замените на ваш API-ключ Binance Testnet
@@ -47,6 +49,7 @@ bb_dev = 2  # Отклонение Bollinger Bands
 # Функция отправки сообщения в Telegram
 def send_telegram_message(message):
     try:
+        print(f"Attempting to send Telegram message: {message}")  # Отладочный print
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         payload = {
             'chat_id': TELEGRAM_CHAT_ID,
@@ -55,10 +58,13 @@ def send_telegram_message(message):
         response = requests.post(url, json=payload)
         if response.status_code != 200:
             logger.error(f"Ошибка отправки сообщения в Telegram: {response.text}", extra={'symbol': symbol})
+            print(f"Telegram error: {response.text}")  # Отладочный print
         else:
             logger.info(f"Telegram-сообщение отправлено: {message}", extra={'symbol': symbol})
+            print(f"Telegram message sent: {message}")  # Отладочный print
     except Exception as e:
         logger.error(f"Ошибка при отправке Telegram-сообщения: {e}", extra={'symbol': symbol})
+        print(f"Exception in send_telegram_message: {e}")  # Отладочный print
 
 # Проверка торговых часов
 def is_trading_time():
@@ -85,6 +91,7 @@ def check_exchange_connection():
     try:
         exchange.fetch_balance()
         logger.info("Успешное подключение к Binance Testnet", extra={'symbol': symbol})
+        send_telegram_message(f"[{symbol}] Успешное подключение к Binance Testnet")
         return True
     except Exception as e:
         logger.error(f"Ошибка подключения к Binance Testnet: {e}", extra={'symbol': symbol})
@@ -164,6 +171,37 @@ def check_entry_conditions(df_1m, df_5m, symbol):
         send_telegram_message(f"[{symbol}] Ошибка при проверке условий входа: {e}")
         return None
 
+# Расчет прибыли/убытка
+def calculate_pnl(side, entry_price, exit_price, position_size):
+    try:
+        if side == 'LONG':
+            pnl = (exit_price - entry_price) * position_size
+        else:  # SHORT
+            pnl = (entry_price - exit_price) * position_size
+        return round(pnl, 2)
+    except Exception as e:
+        logger.error(f"Ошибка при расчете PNL: {e}", extra={'symbol': symbol})
+        return 0
+
+# Закрытие позиции
+def close_position(symbol, side, position_size, entry_price, reason):
+    try:
+        exit_price = exchange.fetch_ticker(symbol)['last']
+        exchange.create_market_order(
+            symbol=symbol,
+            side='sell' if side == 'LONG' else 'buy',
+            amount=position_size,
+            params={'reduceOnly': True, 'positionSide': side}
+        )
+        pnl = calculate_pnl(side, entry_price, exit_price, position_size)
+        logger.info(f"Позиция {side} закрыта ({reason})\nЦена выхода: {exit_price}\nPNL: {pnl} USDT", extra={'symbol': symbol})
+        send_telegram_message(f"[{symbol}] Позиция {side} закрыта ({reason})\nЦена входа: {entry_price}\nЦена выхода: {exit_price}\nPNL: {pnl} USDT")
+        return exit_price, pnl
+    except Exception as e:
+        logger.error(f"Ошибка при закрытии позиции ({reason}): {e}", extra={'symbol': symbol})
+        send_telegram_message(f"[{symbol}] Ошибка при закрытии позиции ({reason}): {e}")
+        return None, 0
+
 # Управление позицией
 def manage_position(symbol, side, entry_price, position_size, atr):
     try:
@@ -186,27 +224,38 @@ def manage_position(symbol, side, entry_price, position_size, atr):
             amount=position_size,
             params={'stopPrice': sl_price, 'reduceOnly': True, 'positionSide': side}
         )
-        logger.info(f"Открыта позиция {side} по цене {entry_price}, TP: {tp_price}, SL: {sl_price}", extra={'symbol': symbol})
+        logger.info(f"Открыта позиция {side} по цене {entry_price}, Размер: {position_size:.6f}, TP: {tp_price}, SL: {sl_price}", extra={'symbol': symbol})
         send_telegram_message(f"[{symbol}] Открыта позиция {side}\nЦена: {entry_price}\nРазмер: {position_size:.6f}\nTP: {tp_price}\nSL: {sl_price}")
+        return tp_price, sl_price
     except Exception as e:
         logger.error(f"Ошибка при установке TP/SL: {e}", extra={'symbol': symbol})
         send_telegram_message(f"[{symbol}] Ошибка при установке TP/SL: {e}")
+        return None, None
 
 # Проверка тайм-аута
 def check_timeout(symbol, entry_time, position_size, side, entry_price):
     if time.time() - entry_time > timeout_seconds:
-        try:
-            exchange.create_market_order(
-                symbol=symbol,
-                side='sell' if side == 'LONG' else 'buy',
-                amount=position_size,
-                params={'reduceOnly': True, 'positionSide': side}
-            )
-            logger.info(f"Позиция закрыта по тайм-ауту ({timeout_seconds} сек)", extra={'symbol': symbol})
-            send_telegram_message(f"[{symbol}] Позиция {side} закрыта по тайм-ауту\nЦена входа: {entry_price}")
-        except Exception as e:
-            logger.error(f"Ошибка при закрытии позиции по тайм-ауту: {e}", extra={'symbol': symbol})
-            send_telegram_message(f"[{symbol}] Ошибка при закрытии позиции по тайм-ауту: {e}")
+        exit_price, pnl = close_position(symbol, side, position_size, entry_price, "тайм-аут")
+        return True, exit_price, pnl
+    return False, None, 0
+
+# Проверка статуса позиции
+def check_position_status(symbol, side, position_size, entry_price, tp_price, sl_price):
+    try:
+        positions = exchange.fapiPrivateV2_get_positionrisk({'symbol': symbol.replace('/', '')})
+        for pos in positions:
+            if float(pos['positionAmt']) != 0 and pos['positionSide'] == side:
+                current_price = float(pos['markPrice'])
+                if (side == 'LONG' and (current_price >= tp_price or current_price <= sl_price)) or \
+                   (side == 'SHORT' and (current_price <= tp_price or current_price >= sl_price)):
+                    reason = "TP" if (side == 'LONG' and current_price >= tp_price) or (side == 'SHORT' and current_price <= tp_price) else "SL"
+                    exit_price, pnl = close_position(symbol, side, position_size, entry_price, reason)
+                    return True, exit_price, pnl
+        return False, None, 0
+    except Exception as e:
+        logger.error(f"Ошибка при проверке статуса позиции: {e}", extra={'symbol': symbol})
+        send_telegram_message(f"[{symbol}] Ошибка при проверке статуса позиции: {e}")
+        return False, None, 0
 
 # Основной цикл
 def main():
@@ -226,6 +275,8 @@ def main():
     position_side = None
     position_size = 0
     entry_price = 0
+    tp_price = None
+    sl_price = None
 
     while True:
         try:
@@ -252,7 +303,30 @@ def main():
             
             # Проверка активной позиции
             if position_active:
-                check_timeout(symbol, entry_time, position_size, position_side, entry_price)
+                # Проверка TP/SL
+                closed, exit_price, pnl = check_position_status(symbol, position_side, position_size, entry_price, tp_price, sl_price)
+                if closed:
+                    position_active = False
+                    position_side = None
+                    position_size = 0
+                    entry_price = 0
+                    tp_price = None
+                    sl_price = None
+                    time.sleep(10)
+                    continue
+                
+                # Проверка тайм-аута
+                timed_out, exit_price, pnl = check_timeout(symbol, entry_time, position_size, position_side, entry_price)
+                if timed_out:
+                    position_active = False
+                    position_side = None
+                    position_size = 0
+                    entry_price = 0
+                    tp_price = None
+                    sl_price = None
+                    time.sleep(10)
+                    continue
+                
                 time.sleep(10)
                 continue
             
@@ -266,14 +340,18 @@ def main():
                 # Открытие позиции
                 if signal == 'LONG':
                     exchange.create_market_buy_order(symbol, position_size, params={'positionSide': 'LONG'})
-                    manage_position(symbol, 'LONG', price, position_size, atr)
+                    tp_price, sl_price = manage_position(symbol, 'LONG', price, position_size, atr)
+                    if tp_price is None or sl_price is None:
+                        continue
                     position_active = True
                     position_side = 'LONG'
                     entry_time = time.time()
                     entry_price = price
                 elif signal == 'SHORT':
                     exchange.create_market_sell_order(symbol, position_size, params={'positionSide': 'SHORT'})
-                    manage_position(symbol, 'SHORT', price, position_size, atr)
+                    tp_price, sl_price = manage_position(symbol, 'SHORT', price, position_size, atr)
+                    if tp_price is None or sl_price is None:
+                        continue
                     position_active = True
                     position_side = 'SHORT'
                     entry_time = time.time()
