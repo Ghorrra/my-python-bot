@@ -1,7 +1,1 @@
-ccxt==4.4.91
-numpy==1.26.4
-pandas==2.2.2
-python-telegram-bot==21.4
-pytz==2024.1
-requests==2.32.3
-pandas-ta==0.3.14b0
+ccxt pandas==2.2.2 numpy==1.26.4 pandas-ta==0.3.13 requests==2.32.3 pytz==2024.1
